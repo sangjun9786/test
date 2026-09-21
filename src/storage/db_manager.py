@@ -261,7 +261,7 @@ class DatabaseManager:
             conn.commit()
 
     def get_recent_stats(self, days: int = 14) -> Dict[str, Any]:
-        """최근 N일간 누적 적중률 통계 요약 (Gemini 프롬프트 피드백용)"""
+        """최근 N일간 누적 적중률 통계 요약"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -285,4 +285,76 @@ class DatabaseManager:
                 "total": 0, "winner_hits": 0, "winner_rate": 0.0,
                 "ou_hits": 0, "ou_rate": 0.0, "f5_winner_hits": 0,
                 "f5_winner_rate": 0.0, "f5_ou_hits": 0, "f5_ou_rate": 0.0
+            }
+
+    def get_advanced_feedback(self, days: int = 14) -> Dict[str, Any]:
+        """
+        [고도화 Step 4] LLM 자가 교정을 위한 상세 진단 통계 (편향, 신뢰도 검증, 불펜 리스크)
+        """
+        base_stats = self.get_recent_stats(days=days)
+        if not base_stats or base_stats.get("total", 0) == 0:
+            return {
+                "has_data": False,
+                "summary_text": "아직 충분한 누적 정산 데이터가 없습니다. (초기 기준 적용)"
+            }
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            # 1. 고신뢰도(별 4개 이상) 픽 적중률
+            cursor.execute("""
+            SELECT 
+                COUNT(*) as high_conf_total,
+                SUM(s.is_winner_hit) as high_conf_hits,
+                ROUND(AVG(s.is_winner_hit) * 100, 1) as high_conf_rate
+            FROM settlements s
+            JOIN predictions p ON s.prediction_id = p.id
+            WHERE p.confidence_stars >= 4;
+            """)
+            high_conf = dict(cursor.fetchone() or {})
+
+            # 2. 불펜 변수 괴리: 5이닝은 맞췄으나 풀이닝에서 역전패한 경기 수
+            cursor.execute("""
+            SELECT COUNT(*) as bullpen_blown_count
+            FROM settlements
+            WHERE is_f5_winner_hit = 1 AND is_winner_hit = 0;
+            """)
+            blown = cursor.fetchone()[0] or 0
+
+            # 3. 언더/오버 편향 분석 (실제 결과가 언더가 많았는지 오버가 많았는지)
+            cursor.execute("""
+            SELECT 
+                SUM(CASE WHEN p.pred_ou_pick = '오버' AND s.is_ou_hit = 0 THEN 1 ELSE 0 END) as over_misses,
+                SUM(CASE WHEN p.pred_ou_pick = '언더' AND s.is_ou_hit = 0 THEN 1 ELSE 0 END) as under_misses
+            FROM settlements s
+            JOIN predictions p ON s.prediction_id = p.id;
+            """)
+            ou_bias = dict(cursor.fetchone() or {})
+
+            # 피드백 문구 조립
+            insights = []
+            insights.append(f"• 최근 누적 승패 적중률: {base_stats['winner_rate']}% ({base_stats['winner_hits']}/{base_stats['total']})")
+            insights.append(f"• 5이닝(F5) 승패 적중률: {base_stats['f5_winner_rate']}% ({base_stats['f5_winner_hits']}/{base_stats['total']})")
+
+            hc_total = high_conf.get("high_conf_total", 0)
+            if hc_total > 0:
+                insights.append(f"• 별 4개 이상 고신뢰도 픽 성공률: {high_conf.get('high_conf_rate', 0)}% ({high_conf.get('high_conf_hits', 0)}/{hc_total})")
+
+            if blown > 0:
+                insights.append(f"• ⚠️ 불펜 역전패 리스크 감지: 선발이 5회까지 리드했으나 불펜 방화로 풀이닝 승리를 놓친 사례 {blown}건 발생 (불펜 취약 팀은 풀이닝보다 5이닝 픽 추천 요망)")
+
+            over_m = ou_bias.get("over_misses", 0) or 0
+            under_m = ou_bias.get("under_misses", 0) or 0
+            if over_m > under_m:
+                insights.append(f"• ⚠️ 언더/오버 편향 경고: 오버 예측 실패({over_m}건)가 언더 실패({under_m}건)보다 많음. 총 득점 기준점을 더 보수적(언더 성향)으로 고려할 것")
+            elif under_m > over_m:
+                insights.append(f"• ⚠️ 언더/오버 편향 경고: 언더 예측 실패({under_m}건)가 오버 실패({over_m}건)보다 많음. 최근 타선 득점권 활약을 더 적극 반영할 것")
+
+            return {
+                "has_data": True,
+                "base_stats": base_stats,
+                "high_conf": high_conf,
+                "blown_count": blown,
+                "ou_bias": ou_bias,
+                "summary_text": "\n".join(insights)
             }

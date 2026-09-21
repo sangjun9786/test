@@ -56,7 +56,8 @@ def run_pipeline(sport: str = "all", dry_run: bool = False, target_date: str = N
     else:
         yesterday_str = (now_kst - timedelta(days=1)).strftime("%Y-%m-%d")
 
-    recent_stats = db_manager.get_recent_stats(days=14)
+    # [고도화 Step 4] 최근 누적 정산 데이터 기반 진단 피드백 산출
+    advanced_feedback = db_manager.get_advanced_feedback(days=14)
 
     # ========================================================
     # 2. MLB 파이프라인
@@ -73,6 +74,7 @@ def run_pipeline(sport: str = "all", dry_run: bool = False, target_date: str = N
             mlb_settle_summary = evaluator.evaluate_date(yesterday_str, "MLB", mlb_actual_results)
             if mlb_settle_summary:
                 settle_md = evaluator.generate_settlement_report_markdown(mlb_settle_summary)
+                card_color = ResultEvaluator.get_settlement_color(mlb_settle_summary.get("winner_rate", 50.0))
                 if dry_run:
                     print("\n[DRY RUN - MLB 어제 정산 리포트]")
                     print(settle_md)
@@ -80,7 +82,7 @@ def run_pipeline(sport: str = "all", dry_run: bool = False, target_date: str = N
                     notifier.send_embed(
                         title=f"📈 [MLB] 어제 경기 예측 결과 정산 ({yesterday_str})",
                         description=settle_md,
-                        color=0x2ECC71  # Emerald Green
+                        color=card_color
                     )
         else:
             logger.info(f"어제({yesterday_str}) 완료된 MLB 경기 결과가 없습니다.")
@@ -91,7 +93,7 @@ def run_pipeline(sport: str = "all", dry_run: bool = False, target_date: str = N
             mlb_report, mlb_preds = analyzer.analyze_games(
                 league="MLB",
                 games_data=mlb_games,
-                recent_stats=recent_stats
+                recent_stats=advanced_feedback
             )
             # SQLite DB에 예측 데이터 영구 저장 (DBeaver에서 즉시 확인 가능)
             if mlb_preds:
@@ -131,6 +133,7 @@ def run_pipeline(sport: str = "all", dry_run: bool = False, target_date: str = N
             kbo_settle_summary = evaluator.evaluate_date(yesterday_str, "KBO", kbo_actual_results)
             if kbo_settle_summary:
                 kbo_settle_md = evaluator.generate_settlement_report_markdown(kbo_settle_summary)
+                kbo_card_color = ResultEvaluator.get_settlement_color(kbo_settle_summary.get("winner_rate", 50.0))
                 if dry_run:
                     print("\n[DRY RUN - KBO 어제 정산 리포트]")
                     print(kbo_settle_md)
@@ -138,7 +141,7 @@ def run_pipeline(sport: str = "all", dry_run: bool = False, target_date: str = N
                     notifier.send_embed(
                         title=f"📈 [KBO] 어제 경기 예측 결과 정산 ({yesterday_str})",
                         description=kbo_settle_md,
-                        color=0x2ECC71  # Emerald Green
+                        color=kbo_card_color
                     )
         else:
             logger.info(f"어제({yesterday_str}) 완료된 KBO 경기 결과가 없습니다.")
@@ -149,7 +152,7 @@ def run_pipeline(sport: str = "all", dry_run: bool = False, target_date: str = N
             kbo_report, kbo_preds = analyzer.analyze_games(
                 league="KBO",
                 games_data=kbo_games,
-                recent_stats=recent_stats
+                recent_stats=advanced_feedback
             )
             # SQLite DB에 예측 데이터 영구 저장 (DBeaver에서 즉시 확인 가능)
             if kbo_preds:

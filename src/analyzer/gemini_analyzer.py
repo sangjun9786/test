@@ -46,15 +46,18 @@ class GeminiSportsAnalyzer:
 
         games_json_str = json.dumps(games_data, indent=2, ensure_ascii=False)
 
-        # 과거 통계 피드백 문구 구성
+        # 과거 통계 및 자가교정 피드백 문구 구성 (고도화 Step 4)
         feedback_text = ""
-        if recent_stats and recent_stats.get("total", 0) > 0:
+        if recent_stats and recent_stats.get("has_data"):
+            summary_insights = recent_stats.get("summary_text", "")
             feedback_text = f"""
-[최근 모델 적중률 피드백 참고]
-- 최근 누적 승패 적중률: {recent_stats.get('winner_rate', 0)}% ({recent_stats.get('winner_hits', 0)}/{recent_stats.get('total', 0)})
-- 최근 5이닝(F5) 적중률: {recent_stats.get('f5_winner_rate', 0)}% ({recent_stats.get('f5_winner_hits', 0)}/{recent_stats.get('total', 0)})
-- 최근 언오버 적중률: {recent_stats.get('ou_rate', 0)}%
-위 과거 성적을 참고하여 선발투수의 초반 실점률과 불펜 변수를 고려해 오늘 5이닝 및 풀이닝 기준점을 신중하게 산정하라.
+[최근 모델 실전 적중률 및 자가교정(Self-Correction) 피드백]
+{summary_insights}
+
+[자가교정 분석 지침]
+1. ⚠️ 불펜 리스크 반영: 선발 투수의 우위는 확실하나 뒷문(불펜)이 불안정한 팀의 경우, 풀이닝 승리보다 '5이닝(F5) 승리'를 1순위 추천 픽으로 적극 채택하라.
+2. ⚠️ 언더/오버 편향 보정: 과거 오버/언더 오차 경향에 따라 오늘 기준점(Total Line) 설정을 보수적으로 재조정하라.
+3. ⚠️ 고신뢰도(★ 4~5개) 엄격화: 선발 지표(ERA, WHIP, 피안타율, K/9 등)에서 압도적인 차이가 있고 타선 지원이 뒷받침될 때만 신뢰도 별 4개 이상을 부여하라.
 """
 
         user_prompt = f"""[분석 대상 리그: {league}]

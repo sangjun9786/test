@@ -150,6 +150,16 @@ class ResultEvaluator:
             "details": settled_list
         }
 
+    @staticmethod
+    def get_settlement_color(winner_rate: float) -> int:
+        """적중률에 따른 동적 임베드 테마 색상 (성공률 가시화)"""
+        if winner_rate >= 60.0:
+            return 0x2ECC71  # 에메랄드 그린 (성공적)
+        elif winner_rate >= 50.0:
+            return 0xF1C40F  # 골드 (양호)
+        else:
+            return 0xE74C3C  # 코랄 레드 (부진)
+
     def generate_settlement_report_markdown(self, summary: Dict[str, Any]) -> str:
         """디스코드 발송용 정산 리포트 마크다운 생성"""
         if not summary or not summary.get("total_games"):
@@ -173,20 +183,22 @@ class ResultEvaluator:
         top_t = summary["top_pick_total"]
 
         lines = [
-            f"# 📈 [{league} 어제 예측 결과 정산] ({date})",
-            f"어제 추천해 드린 총 **{total}경기**의 최종 결과 및 적중률입니다.\n",
+            f"# 📈 [{league} 어제 경기 예측 결과 정산] ({date})",
+            f"어제 추천해 드린 총 **{total}경기**의 최종 결과 및 세부 적중률입니다.\n",
             "### 🎯 주요 적중 성적 요약",
-            f"- **풀이닝 승패 적중률**: `{w_hits}/{total}` (**{w_rate}%**)",
-            f"- **풀이닝 언/오버 적중률**: `{ou_hits}/{total}` (**{ou_rate}%**)",
-            f"- **⚡ 5이닝(F5) 승패 적중률**: `{f5_w_hits}/{total}` (**{f5_w_rate}%**)",
-            f"- **⚡ 5이닝(F5) 언/오버 적중률**: `{f5_ou_hits}/{total}` (**{f5_ou_rate}%**)",
+            f"• **🏁 풀이닝 승패**: `{w_hits}/{total}` (**{w_rate}%**)",
+            f"• **🏁 풀이닝 언/오버**: `{ou_hits}/{total}` (**{ou_rate}%**)",
+            f"• **⚡ 5이닝(F5) 승패**: `{f5_w_hits}/{total}` (**{f5_w_rate}%**)",
+            f"• **⚡ 5이닝(F5) 언/오버**: `{f5_ou_hits}/{total}` (**{f5_ou_rate}%**)",
         ]
 
         if top_t > 0:
-            lines.append(f"- **🏆 TOP 추천 픽 적중**: `{top_h}/{top_t}` (**{round(top_h/top_t*100, 1)}%**)")
+            top_rate = round(top_h / top_t * 100, 1)
+            icon = "🔥 대성공" if top_rate >= 50 else "⚠️ 아쉬움"
+            lines.append(f"• **🏆 TOP 2 추천 픽**: `{top_h}/{top_t}` (**{top_rate}%**) - *{icon}*")
 
         lines.append("\n---")
-        lines.append("### 🔍 경기별 상세 결과")
+        lines.append("### 🔍 경기별 상세 결과표")
 
         for item in summary.get("details", []):
             pred = item["pred"]
@@ -194,20 +206,22 @@ class ResultEvaluator:
             settle = item["settle"]
 
             match_name = f"{pred['away_team']} vs {pred['home_team']}"
-            score_str = f"최종 {actual['actual_away_score']} : {actual['actual_home_score']} (승리: {actual['actual_winner']})"
-            f5_score_str = f"5회말 {actual['f5_away_score']} : {actual['f5_home_score']} (5회 승: {actual['f5_winner']})"
+            score_str = f"최종 {actual['actual_away_score']} : {actual['actual_home_score']} (승: {actual['actual_winner']})"
+            f5_score_str = f"5회 {actual['f5_away_score']} : {actual['f5_home_score']} (5회 승: {actual['f5_winner']})"
 
-            w_icon = "🎯 적중" if settle["is_winner_hit"] else "❌ 미적중"
-            ou_icon = "🎯 적중" if settle["is_ou_hit"] else "❌ 미적중"
-            f5_w_icon = "🎯 적중" if settle["is_f5_winner_hit"] else "❌ 미적중"
-            f5_ou_icon = "🎯 적중" if settle["is_f5_ou_hit"] else "❌ 미적중"
+            w_icon = "✅ 적중" if settle["is_winner_hit"] else "❌ 미적중"
+            ou_icon = "✅ 적중" if settle["is_ou_hit"] else "❌ 미적중"
+            f5_w_icon = "✅ 적중" if settle["is_f5_winner_hit"] else "❌ 미적중"
+            f5_ou_icon = "✅ 적중" if settle["is_f5_ou_hit"] else "❌ 미적중"
 
-            lines.append(f"**📌 {match_name}**")
-            lines.append(f"  • {score_str}")
-            lines.append(f"  • 승패 예측: `{pred.get('pred_winner')}` ➔ **{w_icon}**")
-            lines.append(f"  • 언오버: `{pred.get('pred_ou_pick')} ({pred.get('pred_ou_line')})` ➔ **{ou_icon}**")
-            lines.append(f"  • 5이닝 승패: `{pred.get('pred_f5_winner')}` ➔ **{f5_w_icon}** | 5이닝 언오버: `{pred.get('pred_f5_ou_pick')}` ➔ **{f5_ou_icon}**")
-            lines.append(f"  • {f5_score_str}\n")
+            top_badge = " [🏆 TOP Pick]" if pred.get("is_top_pick") else ""
 
-        lines.append("💡 *모든 결과 데이터는 SQLite(`sports_analytics.db`)에 영구 저장되어 DBeaver에서 상세 조회가 가능합니다.*")
+            lines.append(f"**📌 {match_name}**{top_badge}")
+            lines.append(f"  • {score_str} | {f5_score_str}")
+            lines.append(f"  • **풀이닝 승패**: `{pred.get('pred_winner')}` ➔ **{w_icon}**")
+            lines.append(f"  • **풀이닝 언오버**: `{pred.get('pred_ou_pick')} ({pred.get('pred_ou_line')})` ➔ **{ou_icon}**")
+            lines.append(f"  • **5이닝 승패**: `{pred.get('pred_f5_winner')}` ➔ **{f5_w_icon}**")
+            lines.append(f"  • **5이닝 언오버**: `{pred.get('pred_f5_ou_pick')} ({pred.get('pred_f5_ou_line')})` ➔ **{f5_ou_icon}**\n")
+
+        lines.append("💡 *모든 과거 적중/미적중 데이터는 SQLite(`sports_analytics.db`)에 누적되며 DBeaver 26.2+에서 상세 쿼리가 가능합니다.*")
         return "\n".join(lines)
