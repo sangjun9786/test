@@ -39,6 +39,8 @@ def run_pipeline(sport: str = "all", dry_run: bool = False, target_date: str = N
     analyzer = GeminiSportsAnalyzer(api_key=GEMINI_API_KEY)
     notifier = DiscordNotifier(webhook_url=DISCORD_WEBHOOK_URL) if not dry_run else None
 
+    today_default_str = target_date or datetime.now(KST).strftime("%Y-%m-%d")
+
     # 2. MLB 파이프라인
     if sport in ["all", "mlb"]:
         logger.info("\n--- [1] MLB 데이터 처리 시작 ---")
@@ -51,7 +53,7 @@ def run_pipeline(sport: str = "all", dry_run: bool = False, target_date: str = N
                 print("\n[DRY RUN - MLB 생성 리포트]")
                 print(mlb_report)
             else:
-                today_str = mlb_games[0].get("date", datetime.now(KST).strftime("%Y-%m-%d"))
+                today_str = mlb_games[0].get("date", today_default_str)
                 notifier.send_embed(
                     title=f"⚾ [MLB] 데일리 경기 분석 & 추천 픽 ({today_str})",
                     description=mlb_report,
@@ -59,6 +61,12 @@ def run_pipeline(sport: str = "all", dry_run: bool = False, target_date: str = N
                 )
         else:
             logger.info("오늘 분석할 MLB 경기가 없습니다.")
+            if not dry_run:
+                notifier.send_embed(
+                    title=f"⚾ [MLB] 데일리 경기 브리핑 ({today_default_str})",
+                    description=f"📊 **오늘({today_default_str})은 예정된 MLB 경기 일정이 없습니다.**",
+                    color=0x95A5A6
+                )
 
     # 3. KBO 파이프라인
     if sport in ["all", "kbo"]:
@@ -72,7 +80,7 @@ def run_pipeline(sport: str = "all", dry_run: bool = False, target_date: str = N
                 print("\n[DRY RUN - KBO 생성 리포트]")
                 print(kbo_report)
             else:
-                today_str = kbo_games[0].get("date", datetime.now(KST).strftime("%Y-%m-%d"))
+                today_str = kbo_games[0].get("date", today_default_str)
                 notifier.send_embed(
                     title=f"⚾ [KBO] 데일리 경기 분석 & 추천 픽 ({today_str})",
                     description=kbo_report,
@@ -80,6 +88,16 @@ def run_pipeline(sport: str = "all", dry_run: bool = False, target_date: str = N
                 )
         else:
             logger.info("오늘 분석할 KBO 경기가 없습니다.")
+            if not dry_run:
+                notifier.send_embed(
+                    title=f"⚾ [KBO] 데일리 경기 브리핑 ({today_default_str})",
+                    description=(
+                        f"📊 **오늘({today_default_str})은 KBO 정규 리그 경기 일정이 없습니다.**\n\n"
+                        "• **참고**: 매주 월요일은 KBO 공식 정기 휴식일이거나, 우천 취소 등으로 경기가 배정되지 않은 날입니다.\n"
+                        "• 내일(화요일) 경기부터 정상 분석 브리핑이 제공됩니다!"
+                    ),
+                    color=0x95A5A6
+                )
 
     logger.info("\n" + "=" * 60)
     logger.info("✅ 모든 스포츠 분석 파이프라인 실행 완료")
