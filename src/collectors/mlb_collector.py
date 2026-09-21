@@ -152,6 +152,77 @@ class MLBCollector:
         logger.info(f"MLB {len(processed_games)}개 경기 데이터 수집 완료")
         return processed_games
 
+    def fetch_results(self, target_date: str) -> List[Dict[str, Any]]:
+        """
+        특정 날짜의 MLB 최종 경기 결과 및 5이닝(F5) 스코어 수집
+        :param target_date: 'YYYY-MM-DD'
+        """
+        url = f"{self.BASE_URL}/schedule"
+        params = {
+            "sportId": 1,
+            "date": target_date,
+            "hydrate": "linescore,team"
+        }
+
+        logger.info(f"MLB 경기 결과 수집 중: {target_date}...")
+        try:
+            resp = self.session.get(url, params=params, timeout=self.timeout)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            logger.error(f"MLB 결과 조회 오류: {e}")
+            return []
+
+        dates = data.get("dates", [])
+        if not dates:
+            return []
+
+        results = []
+        for g in dates[0].get("games", []):
+            status = g.get("status", {}).get("detailedState", "")
+            if status not in ["Final", "Completed Early", "Game Over"]:
+                continue  # 아직 끝나지 않은 경기는 제외
+
+            teams = g.get("teams", {})
+            away_team = teams.get("away", {}).get("team", {}).get("name", "Away")
+            home_team = teams.get("home", {}).get("team", {}).get("name", "Home")
+
+            away_score = teams.get("away", {}).get("score", 0)
+            home_score = teams.get("home", {}).get("score", 0)
+
+            actual_winner = away_team if away_score > home_score else (home_team if home_score > away_score else "무승부")
+            total_runs = away_score + home_score
+
+            # 5이닝(F5) 점수 계산
+            linescore = g.get("linescore", {})
+            innings = linescore.get("innings", [])
+            f5_innings = innings[:5]
+
+            f5_away = sum(i.get("away", {}).get("runs", 0) for i in f5_innings)
+            f5_home = sum(i.get("home", {}).get("runs", 0) for i in f5_innings)
+            f5_winner = away_team if f5_away > f5_home else (home_team if f5_home > f5_away else "무승부")
+            f5_total = f5_away + f5_home
+
+            results.append({
+                "league": "MLB",
+                "game_id": g.get("gamePk"),
+                "date": target_date,
+                "away_team": away_team,
+                "home_team": home_team,
+                "status": status,
+                "actual_away_score": away_score,
+                "actual_home_score": home_score,
+                "actual_winner": actual_winner,
+                "total_runs": total_runs,
+                "f5_away_score": f5_away,
+                "f5_home_score": f5_home,
+                "f5_winner": f5_winner,
+                "f5_total_runs": f5_total
+            })
+
+        logger.info(f"MLB {len(results)}개 완료 경기 결과(5이닝 포함) 수집 완료")
+        return results
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

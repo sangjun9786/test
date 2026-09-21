@@ -8,6 +8,8 @@ from .collectors.mlb_collector import MLBCollector
 from .collectors.kbo_collector import KBOCollector
 from .analyzer.gemini_analyzer import GeminiSportsAnalyzer
 from .notifier.discord_notifier import DiscordNotifier
+from .storage.db_manager import DatabaseManager
+from .evaluator.result_evaluator import ResultEvaluator
 
 # Windows 콘솔 인코딩(cp949) 대응 utf-8 강제 설정
 if hasattr(sys.stdout, "reconfigure"):
@@ -27,35 +29,81 @@ KST = timezone(timedelta(hours=9))
 
 def run_pipeline(sport: str = "all", dry_run: bool = False, target_date: str = None):
     """
-    스포츠 데이터 수집 -> Gemini 통계 분석 -> 디스코드 웹훅 전송 파이프라인
+    스포츠 데이터 수집 -> 어제 경기 5이닝/풀이닝 결과 정산 -> 오늘 분석 & 5이닝 예측 -> 디스코드 전송 & SQLite 영구 누적
     """
     logger.info("=" * 60)
-    logger.info(f"🚀 스포츠 자동 분석 파이프라인 시작 (종목: {sport}, Dry-run: {dry_run})")
+    logger.info(f"🚀 스포츠 자동 분석 & 정산 파이프라인 시작 (종목: {sport}, Dry-run: {dry_run})")
     logger.info("=" * 60)
 
     # 1. 설정 검증
     validate_config(require_webhook=(not dry_run))
 
+    db_manager = DatabaseManager()
+    evaluator = ResultEvaluator(db_manager)
     analyzer = GeminiSportsAnalyzer(api_key=GEMINI_API_KEY)
     notifier = DiscordNotifier(webhook_url=DISCORD_WEBHOOK_URL) if not dry_run else None
 
-    today_default_str = target_date or datetime.now(KST).strftime("%Y-%m-%d")
+    now_kst = datetime.now(KST)
+    today_default_str = target_date or now_kst.strftime("%Y-%m-%d")
 
+    # 어제 날짜 계산
+    if target_date:
+        try:
+            cur_dt = datetime.strptime(target_date, "%Y-%m-%d")
+            yesterday_str = (cur_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+        except Exception:
+            yesterday_str = (now_kst - timedelta(days=1)).strftime("%Y-%m-%d")
+    else:
+        yesterday_str = (now_kst - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    recent_stats = db_manager.get_recent_stats(days=14)
+
+    # ========================================================
     # 2. MLB 파이프라인
+    # ========================================================
     if sport in ["all", "mlb"]:
-        logger.info("\n--- [1] MLB 데이터 처리 시작 ---")
+        logger.info("\n" + "="*20 + " [1] MLB 처리 시작 " + "="*20)
         mlb_collector = MLBCollector()
-        mlb_games = mlb_collector.fetch_schedule(target_date=target_date)
 
+        # [단계 A] 어제 경기 결과 수집 및 5이닝/풀이닝 적중 정산
+        logger.info(f"어제({yesterday_str}) MLB 경기 결과 정산 진행...")
+        mlb_actual_results = mlb_collector.fetch_results(target_date=yesterday_str)
+        if mlb_actual_results:
+            db_manager.save_game_results(yesterday_str, "MLB", mlb_actual_results)
+            mlb_settle_summary = evaluator.evaluate_date(yesterday_str, "MLB", mlb_actual_results)
+            if mlb_settle_summary:
+                settle_md = evaluator.generate_settlement_report_markdown(mlb_settle_summary)
+                if dry_run:
+                    print("\n[DRY RUN - MLB 어제 정산 리포트]")
+                    print(settle_md)
+                else:
+                    notifier.send_embed(
+                        title=f"📈 [MLB] 어제 경기 예측 결과 정산 ({yesterday_str})",
+                        description=settle_md,
+                        color=0x2ECC71  # Emerald Green
+                    )
+        else:
+            logger.info(f"어제({yesterday_str}) 완료된 MLB 경기 결과가 없습니다.")
+
+        # [단계 B] 오늘 경기 데이터 수집 및 5이닝/풀이닝 분석
+        mlb_games = mlb_collector.fetch_schedule(target_date=target_date)
         if mlb_games:
-            mlb_report = analyzer.analyze_games(league="MLB", games_data=mlb_games)
+            mlb_report, mlb_preds = analyzer.analyze_games(
+                league="MLB",
+                games_data=mlb_games,
+                recent_stats=recent_stats
+            )
+            # SQLite DB에 예측 데이터 영구 저장 (DBeaver에서 즉시 확인 가능)
+            if mlb_preds:
+                db_manager.save_predictions(today_default_str, "MLB", mlb_preds)
+                logger.info(f"💾 MLB {len(mlb_preds)}개 경기 예측 데이터 SQLite 저장 완료")
+
             if dry_run:
-                print("\n[DRY RUN - MLB 생성 리포트]")
+                print("\n[DRY RUN - MLB 오늘 분석 리포트]")
                 print(mlb_report)
             else:
-                today_str = mlb_games[0].get("date", today_default_str)
                 notifier.send_embed(
-                    title=f"⚾ [MLB] 데일리 경기 분석 & 추천 픽 ({today_str})",
+                    title=f"⚾ [MLB] 데일리 경기 분석 & 추천 픽 ({today_default_str})",
                     description=mlb_report,
                     color=0x005A9C  # MLB Blue
                 )
@@ -68,21 +116,52 @@ def run_pipeline(sport: str = "all", dry_run: bool = False, target_date: str = N
                     color=0x95A5A6
                 )
 
+    # ========================================================
     # 3. KBO 파이프라인
+    # ========================================================
     if sport in ["all", "kbo"]:
-        logger.info("\n--- [2] KBO 데이터 처리 시작 ---")
+        logger.info("\n" + "="*20 + " [2] KBO 처리 시작 " + "="*20)
         kbo_collector = KBOCollector()
-        kbo_games = kbo_collector.fetch_schedule(target_date=target_date)
 
+        # [단계 A] 어제 경기 결과 수집 및 5이닝/풀이닝 적중 정산
+        logger.info(f"어제({yesterday_str}) KBO 경기 결과 정산 진행...")
+        kbo_actual_results = kbo_collector.fetch_results(target_date=yesterday_str)
+        if kbo_actual_results:
+            db_manager.save_game_results(yesterday_str, "KBO", kbo_actual_results)
+            kbo_settle_summary = evaluator.evaluate_date(yesterday_str, "KBO", kbo_actual_results)
+            if kbo_settle_summary:
+                kbo_settle_md = evaluator.generate_settlement_report_markdown(kbo_settle_summary)
+                if dry_run:
+                    print("\n[DRY RUN - KBO 어제 정산 리포트]")
+                    print(kbo_settle_md)
+                else:
+                    notifier.send_embed(
+                        title=f"📈 [KBO] 어제 경기 예측 결과 정산 ({yesterday_str})",
+                        description=kbo_settle_md,
+                        color=0x2ECC71  # Emerald Green
+                    )
+        else:
+            logger.info(f"어제({yesterday_str}) 완료된 KBO 경기 결과가 없습니다.")
+
+        # [단계 B] 오늘 경기 데이터 수집 및 5이닝/풀이닝 분석
+        kbo_games = kbo_collector.fetch_schedule(target_date=target_date)
         if kbo_games:
-            kbo_report = analyzer.analyze_games(league="KBO", games_data=kbo_games)
+            kbo_report, kbo_preds = analyzer.analyze_games(
+                league="KBO",
+                games_data=kbo_games,
+                recent_stats=recent_stats
+            )
+            # SQLite DB에 예측 데이터 영구 저장 (DBeaver에서 즉시 확인 가능)
+            if kbo_preds:
+                db_manager.save_predictions(today_default_str, "KBO", kbo_preds)
+                logger.info(f"💾 KBO {len(kbo_preds)}개 경기 예측 데이터 SQLite 저장 완료")
+
             if dry_run:
-                print("\n[DRY RUN - KBO 생성 리포트]")
+                print("\n[DRY RUN - KBO 오늘 분석 리포트]")
                 print(kbo_report)
             else:
-                today_str = kbo_games[0].get("date", today_default_str)
                 notifier.send_embed(
-                    title=f"⚾ [KBO] 데일리 경기 분석 & 추천 픽 ({today_str})",
+                    title=f"⚾ [KBO] 데일리 경기 분석 & 추천 픽 ({today_default_str})",
                     description=kbo_report,
                     color=0xFF6B00  # KBO Orange
                 )
@@ -100,7 +179,7 @@ def run_pipeline(sport: str = "all", dry_run: bool = False, target_date: str = N
                 )
 
     logger.info("\n" + "=" * 60)
-    logger.info("✅ 모든 스포츠 분석 파이프라인 실행 완료")
+    logger.info("✅ 모든 스포츠 분석 & 정산 파이프라인 실행 완료 (SQLite 저장 완료)")
     logger.info("=" * 60)
 
 

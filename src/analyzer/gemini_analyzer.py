@@ -31,70 +31,142 @@ class GeminiSportsAnalyzer:
         self.candidate_models = candidate_models or DEFAULT_GEMINI_MODELS
         self.client = genai.Client(api_key=self.api_key)
 
-    def analyze_games(self, league: str, games_data: List[Dict[str, Any]]) -> str:
+    def analyze_games(
+        self,
+        league: str,
+        games_data: List[Dict[str, Any]],
+        recent_stats: Optional[Dict[str, Any]] = None
+    ) -> tuple[str, List[Dict[str, Any]]]:
         """
-        수집된 경기 JSON 데이터를 바탕으로 Gemini 분석 리포트 생성
+        수집된 경기 JSON 데이터를 바탕으로 Gemini 분석 리포트(마크다운) 및 DB 저장용 구조화 데이터 생성
+        :return: (discord_markdown_report, structured_predictions_list)
         """
         if not games_data:
-            return f"📊 **[{league}] 오늘 예정된 경기 데이터가 없습니다.**"
+            return f"📊 **[{league}] 오늘 예정된 경기 데이터가 없습니다.**", []
 
         games_json_str = json.dumps(games_data, indent=2, ensure_ascii=False)
 
+        # 과거 통계 피드백 문구 구성
+        feedback_text = ""
+        if recent_stats and recent_stats.get("total", 0) > 0:
+            feedback_text = f"""
+[최근 모델 적중률 피드백 참고]
+- 최근 누적 승패 적중률: {recent_stats.get('winner_rate', 0)}% ({recent_stats.get('winner_hits', 0)}/{recent_stats.get('total', 0)})
+- 최근 5이닝(F5) 적중률: {recent_stats.get('f5_winner_rate', 0)}% ({recent_stats.get('f5_winner_hits', 0)}/{recent_stats.get('total', 0)})
+- 최근 언오버 적중률: {recent_stats.get('ou_rate', 0)}%
+위 과거 성적을 참고하여 선발투수의 초반 실점률과 불펜 변수를 고려해 오늘 5이닝 및 풀이닝 기준점을 신중하게 산정하라.
+"""
+
         user_prompt = f"""[분석 대상 리그: {league}]
+{feedback_text}
 오늘 분석할 경기 데이터 목록(JSON):
 ```json
 {games_json_str}
 ```
 
-위 데이터를 꼼꼼히 확인하고 다음 양식으로 디스코드 브리핑 리포트를 작성해줘:
+위 데이터를 분석하여 다음 양식으로 작성해줘. 특히 **5이닝(F5) 선발 매치업**과 **풀이닝 종합 분석**을 명확히 구분하여 예측할 것:
 
 # ⚾ [{league} 데일리 매치업 & 추천 픽] ({games_data[0].get('date', '오늘')})
 
 각 경기마다:
 ### 📌 [경기시간 KST] 원정팀 vs 홈팀
-- **선발 매치업**: 원정 선발 vs 홈 선발 (핵심 지표 비교)
-- **예상 스코어**: 원정 X : 홈 Y
-- **추천 픽**: 승리팀 예상 / [오버 또는 언더 (기준점)]
-- **신뢰도**: ★★★☆☆
-- **핵심 분석 요약**: (2~3줄 요약)
+- **선발 매치업**: 원정 선발 vs 홈 선발 (스탯 비교)
+- **⚡ 5이닝(F5) 예측**: 
+  • 5이닝 승리 예상: [원정팀 / 홈팀 / 5이닝 무승부] (예상 스코어 X:Y)
+  • 5이닝 언/오버: [오버 또는 언더 (기준점 4.5 등)]
+- **🏁 풀이닝 종합 예측**:
+  • 승리팀 예상: [원정팀 또는 홈팀] (예상 최종 스코어 X:Y)
+  • 풀이닝 언/오버: [오버 또는 언더 (기준점 8.5 등)]
+- **신뢰도**: ★★★★☆
+- **핵심 분석 요약**: (선발 투수 초반 우위 및 5이닝/풀이닝 승부처 2~3줄 요약)
 
 ---
 마지막에:
 ### 🏆 오늘의 최고 추천 픽 (TOP 2 Pick)
 1. ...
 2. ...
+
+---
+[중요: 시스템 저장용 JSON]
+본문 맨 마지막에 아래 규격의 JSON 블록을 반드시 포함할 것 (코드블록 이름: ```json:predictions):
+```json:predictions
+[
+  {{
+    "away_team": "원정팀명",
+    "home_team": "홈팀명",
+    "away_pitcher": "원정선발",
+    "home_pitcher": "홈선발",
+    "pred_winner": "풀이닝 승리팀",
+    "pred_away_score": 5,
+    "pred_home_score": 3,
+    "pred_ou_pick": "언더",
+    "pred_ou_line": 8.5,
+    "pred_f5_winner": "5이닝 승리팀 또는 무승부",
+    "pred_f5_away_score": 2,
+    "pred_f5_home_score": 1,
+    "pred_f5_ou_pick": "언더",
+    "pred_f5_ou_line": 4.5,
+    "confidence_stars": 4,
+    "is_top_pick": true,
+    "analysis_summary": "핵심 분석 한 줄"
+  }}
+]
+```
 """
         combined_prompt = f"{SYSTEM_PROMPT}\n\n{user_prompt}"
 
-        # 사용 가능한 모델들을 순차적으로 시도 (호환성 보장)
+        raw_report = ""
         last_err = None
         for model in self.candidate_models:
             logger.info(f"{league} 분석 시도 중 (모델: {model})...")
-            # 1. interactions.create 시도
             try:
                 interaction = self.client.interactions.create(
                     model=model,
                     input=combined_prompt
                 )
                 if interaction and interaction.output_text:
-                    logger.info(f"✅ {league} 분석 완료 (모델: {model}, 글자수: {len(interaction.output_text)})")
-                    return interaction.output_text.strip()
+                    raw_report = interaction.output_text.strip()
+                    break
             except Exception as e:
                 logger.debug(f"interactions API ({model}) 실패: {e}")
 
-            # 2. models.generate_content 시도
             try:
                 resp = self.client.models.generate_content(
                     model=model,
                     contents=combined_prompt
                 )
                 if resp and resp.text:
-                    logger.info(f"✅ {league} 분석 완료 (generate_content / 모델: {model}, 글자수: {len(resp.text)})")
-                    return resp.text.strip()
+                    raw_report = resp.text.strip()
+                    break
             except Exception as e:
                 logger.warning(f"모델 {model} 호출 실패: {e}")
                 last_err = e
 
-        error_msg = f"Gemini 모든 모델 호출 실패: {last_err}"
-        logger.error(error_msg)
-        raise RuntimeError(error_msg)
+        if not raw_report:
+            raise RuntimeError(f"Gemini 모든 모델 호출 실패: {last_err}")
+
+        # JSON 블록 파싱 및 분리
+        structured_preds = []
+        discord_markdown = raw_report
+
+        if "```json:predictions" in raw_report:
+            parts = raw_report.split("```json:predictions")
+            discord_markdown = parts[0].strip()
+            json_part = parts[1].split("```")[0].strip()
+            try:
+                structured_preds = json.loads(json_part)
+            except Exception as e:
+                logger.warning(f"예측 JSON 파싱 오류: {e}")
+        elif "```json" in raw_report:
+            # fallback
+            parts = raw_report.split("```json")
+            discord_markdown = parts[0].strip()
+            json_part = parts[-1].split("```")[0].strip()
+            try:
+                data = json.loads(json_part)
+                if isinstance(data, list):
+                    structured_preds = data
+            except Exception:
+                pass
+
+        return discord_markdown, structured_preds

@@ -28,6 +28,8 @@ on:
 jobs:
   run-sports-briefing:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: 저장소 체크아웃
@@ -61,3 +63,17 @@ jobs:
           
           echo "실행 파라미터: Sport=$SPORT_PARAM, DryRun=$DRY_RUN_FLAG"
           python -m src.main --sport "$SPORT_PARAM" $DRY_RUN_FLAG
+
+      - name: SQLite 데이터베이스 영구 저장 (Git 자동 커밋 & 푸시)
+        if: always()
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if ! git diff-index --quiet HEAD; then
+            git commit -m "chore: auto-update sports analytics database [skip ci]"
+            git push
+            echo "SQLite 데이터베이스가 성공적으로 저장소에 업데이트되었습니다."
+          else
+            echo "새로 변경된 데이터가 없습니다."
+          fi

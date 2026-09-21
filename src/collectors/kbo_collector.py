@@ -117,6 +117,87 @@ class KBOCollector:
         logger.info(f"KBO {len(processed_games)}개 경기 데이터 수집 완료")
         return processed_games
 
+    def fetch_results(self, target_date: str) -> List[Dict[str, Any]]:
+        """
+        특정 날짜의 KBO 최종 경기 결과 및 5이닝(F5) 스코어 수집
+        :param target_date: 'YYYY-MM-DD' 또는 'YYYYMMDD'
+        """
+        date_key = target_date.replace("-", "")
+        display_date = f"{date_key[:4]}-{date_key[4:6]}-{date_key[6:8]}" if len(date_key) == 8 else target_date
+
+        params = {
+            "page": 1,
+            "leagueCode": "kbo",
+            "fromDate": date_key,
+            "toDate": date_key
+        }
+
+        logger.info(f"KBO 경기 결과 수집 중: {display_date}...")
+        try:
+            resp = self.session.get(self.DAUM_SCHEDULE_URL, params=params, timeout=self.timeout)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            logger.error(f"KBO 결과 목록 조회 실패: {e}")
+            return []
+
+        games_raw = data.get("schedule", {}).get(date_key, [])
+        results = []
+
+        for g in games_raw:
+            status = g.get("gameStatus")
+            if status != "END":
+                continue  # 종료된 경기만 처리
+
+            game_id = g.get("gameId")
+            away_team = g.get("awayTeamName", "원정")
+            home_team = g.get("homeTeamName", "홈")
+
+            # 상세 점수판(5이닝 데이터 포함) 조회
+            f5_away = 0
+            f5_home = 0
+            away_score = int(g.get("awayResult", 0) or 0)
+            home_score = int(g.get("homeResult", 0) or 0)
+
+            try:
+                detail_url = f"https://sports.daum.net/prx/hermes/api/game/get.json?gameId={game_id}"
+                detail_resp = self.session.get(detail_url, timeout=self.timeout)
+                if detail_resp.status_code == 200:
+                    detail_data = detail_resp.json()
+                    hs = detail_data.get("homeScore", {}) or {}
+                    as_ = detail_data.get("awayScore", {}) or {}
+
+                    h_innings = [int(x.strip()) for x in hs.get("inning", "").split(",") if x.strip().isdigit()]
+                    a_innings = [int(x.strip()) for x in as_.get("inning", "").split(",") if x.strip().isdigit()]
+
+                    f5_home = sum(h_innings[:5])
+                    f5_away = sum(a_innings[:5])
+            except Exception as e:
+                logger.warning(f"KBO {game_id} 5이닝 상세 스코어 조회 실패 ({e}), 풀스코어로 대체")
+
+            actual_winner = away_team if away_score > home_score else (home_team if home_score > away_score else "무승부")
+            f5_winner = away_team if f5_away > f5_home else (home_team if f5_home > f5_away else "무승부")
+
+            results.append({
+                "league": "KBO",
+                "game_id": game_id,
+                "date": display_date,
+                "away_team": away_team,
+                "home_team": home_team,
+                "status": "END",
+                "actual_away_score": away_score,
+                "actual_home_score": home_score,
+                "actual_winner": actual_winner,
+                "total_runs": away_score + home_score,
+                "f5_away_score": f5_away,
+                "f5_home_score": f5_home,
+                "f5_winner": f5_winner,
+                "f5_total_runs": f5_away + f5_home
+            })
+
+        logger.info(f"KBO {len(results)}개 완료 경기 결과(5이닝 포함) 수집 완료")
+        return results
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
