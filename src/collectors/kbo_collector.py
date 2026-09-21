@@ -52,9 +52,9 @@ class KBOCollector:
             "Referer": "https://sports.daum.net/schedule/kbo"
         })
 
-    def fetch_kbo_official_split(self, player_id: str, is_home: bool) -> Dict[str, Any]:
+    def fetch_kbo_official_pitcher_data(self, player_id: str, is_home: bool) -> Dict[str, Any]:
         """
-        KBO 공식 기록실(koreabaseball.com) 등판 일지에서 홈 또는 방문(원정) 스플릿 지표 집계
+        KBO 공식 기록실(koreabaseball.com) 등판 일지에서 홈/방문 스플릿 지표 및 최근 5경기 세부 로그 추출
         :param player_id: KBO 선수 번호 (예: 54729)
         :param is_home: 홈 등판 여부 (True면 홈, False면 방문/원정)
         """
@@ -73,6 +73,7 @@ class KBOCollector:
             rows = re.findall(r'<tr[^>]*>(.*?)</tr>', t2, re.DOTALL)
 
             target_gubun = '홈' if is_home else '방문'
+            split_label = "홈" if is_home else "원정"
             total_er = 0
             total_ip = 0.0
             total_h = 0
@@ -81,41 +82,67 @@ class KBOCollector:
             total_bb = 0
             games_count = 0
 
+            game_logs = []
+            cond_logs = []
+
             for r in rows:
                 cols = [re.sub(r'<[^>]+>', '', c).strip() for c in re.findall(r'<td[^>]*>(.*?)</td>', r, re.DOTALL)]
                 if len(cols) >= 14:
                     gubun = cols[1]  # '홈' 또는 '방문'
+                    venue_type = "홈" if gubun == '홈' else "원정"
+                    log_item = {
+                        "date": cols[0],
+                        "opponent": cols[2],
+                        "venue_type": venue_type,
+                        "innings": cols[6],
+                        "hits": int(cols[7]) if cols[7].isdigit() else 0,
+                        "runs": int(cols[12]) if cols[12].isdigit() else 0,
+                        "er": int(cols[13]) if cols[13].isdigit() else 0,
+                        "hr": int(cols[8]) if cols[8].isdigit() else 0,
+                        "so": int(cols[11]) if cols[11].isdigit() else 0,
+                        "bb": int(cols[9]) if cols[9].isdigit() else 0,
+                        "era": cols[4],
+                        "result": cols[3]
+                    }
+                    game_logs.append(log_item)
+
                     if gubun == target_gubun:
+                        cond_logs.append(log_item)
                         games_count += 1
                         ip_val = parse_innings_str(cols[6])
                         total_ip += ip_val
-                        total_h += int(cols[7]) if cols[7].isdigit() else 0
-                        total_hr += int(cols[8]) if cols[8].isdigit() else 0
-                        total_bb += int(cols[9]) if cols[9].isdigit() else 0
-                        total_so += int(cols[11]) if cols[11].isdigit() else 0
-                        total_er += int(cols[13]) if cols[13].isdigit() else 0
+                        total_h += log_item["hits"]
+                        total_hr += log_item["hr"]
+                        total_bb += log_item["bb"]
+                        total_so += log_item["so"]
+                        total_er += log_item["er"]
 
-            if games_count == 0 or total_ip == 0.0:
-                return {}
-
-            era = round((total_er * 9.0) / total_ip, 2)
-            hr9 = round((total_hr * 9.0) / total_ip, 2)
-            whip = round((total_h + total_bb) / total_ip, 2)
-
-            return {
-                "split_type": "홈(Home)" if is_home else "원정(Away)",
-                "games": games_count,
-                "era": f"{era:.2f}",
-                "whip": f"{whip:.2f}",
-                "inningsPitched": f"{total_ip:.1f}",
-                "homeRuns": total_hr,
-                "hr9": f"{hr9:.2f}",
-                "hits": total_h,
-                "strikeouts": total_so,
-                "walks": total_bb
+            result: Dict[str, Any] = {
+                "recent_5_overall": game_logs[-5:][::-1] if game_logs else [],
+                "recent_5_split": cond_logs[-5:][::-1] if cond_logs else [],
+                "split_condition": f"최근 {split_label} 5경기"
             }
+
+            if games_count > 0 and total_ip > 0.0:
+                era = round((total_er * 9.0) / total_ip, 2)
+                hr9 = round((total_hr * 9.0) / total_ip, 2)
+                whip = round((total_h + total_bb) / total_ip, 2)
+                result["split_stats"] = {
+                    "split_type": "홈(Home)" if is_home else "원정(Away)",
+                    "games": games_count,
+                    "era": f"{era:.2f}",
+                    "whip": f"{whip:.2f}",
+                    "inningsPitched": f"{total_ip:.1f}",
+                    "homeRuns": total_hr,
+                    "hr9": f"{hr9:.2f}",
+                    "hits": total_h,
+                    "strikeouts": total_so,
+                    "walks": total_bb
+                }
+
+            return result
         except Exception as e:
-            logger.debug(f"KBO 공식 기록실 스플릿 조회 실패 ({player_id}): {e}")
+            logger.debug(f"KBO 공식 기록실 스플릿/게임로그 조회 실패 ({player_id}): {e}")
             return {}
 
     def fetch_schedule_via_naver(self, display_date: str) -> List[Dict[str, Any]]:
@@ -207,11 +234,11 @@ class KBOCollector:
                                     "innings": aw_opp.get("inn", "0.0"),
                                     "er": aw_opp.get("er", 0)
                                 }
-                            # 원정 등판 스플릿 (KBO 공식 기록실 연동)
+                            # 원정 등판 스플릿 및 최근 5경기 (KBO 공식 기록실 연동)
                             if aw_pcode:
-                                split = self.fetch_kbo_official_split(aw_pcode, is_home=False)
-                                if split:
-                                    away_pitcher_data["split_stats"] = split
+                                kbo_data = self.fetch_kbo_official_pitcher_data(aw_pcode, is_home=False)
+                                if kbo_data:
+                                    away_pitcher_data.update(kbo_data)
 
                         # 홈 선발투수
                         hm_starter = prev_data.get("homeStarter", {})
@@ -241,11 +268,11 @@ class KBOCollector:
                                     "innings": hm_opp.get("inn", "0.0"),
                                     "er": hm_opp.get("er", 0)
                                 }
-                            # 홈 등판 스플릿 (KBO 공식 기록실 연동)
+                            # 홈 등판 스플릿 및 최근 5경기 (KBO 공식 기록실 연동)
                             if hm_pcode:
-                                split = self.fetch_kbo_official_split(hm_pcode, is_home=True)
-                                if split:
-                                    home_pitcher_data["split_stats"] = split
+                                kbo_data = self.fetch_kbo_official_pitcher_data(hm_pcode, is_home=True)
+                                if kbo_data:
+                                    home_pitcher_data.update(kbo_data)
                 except Exception as ex:
                     logger.debug(f"네이버 프리뷰 조회 중 예외 ({game_id}): {ex}")
 

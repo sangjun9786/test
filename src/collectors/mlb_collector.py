@@ -90,6 +90,61 @@ class MLBCollector:
             logger.warning(f"선발투수(ID: {person_id}) 스탯 조회 실패: {e}")
             return {}
 
+    def fetch_pitcher_game_logs(self, person_id: int, is_home: bool) -> Dict[str, Any]:
+        """
+        선발 투수 최근 전체 5경기 및 최근 조건별(홈 선발이면 홈 5경기, 원정 선발이면 원정 5경기) 등판 기록 조회
+        """
+        if not person_id:
+            return {}
+
+        url = f"{self.BASE_URL}/people/{person_id}/stats?stats=gameLog&group=pitching"
+        try:
+            resp = self.session.get(url, timeout=self.timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            stats_list = data.get("stats", [])
+            if not stats_list:
+                return {}
+            splits = stats_list[0].get("splits", [])
+            if not splits:
+                return {}
+
+            def format_log(s):
+                st = s.get("stat", {})
+                opp = s.get("opponent", {}).get("name", "상대팀")
+                venue_type = "홈" if s.get("isHome") else "원정"
+                return {
+                    "date": s.get("date", ""),
+                    "opponent": opp,
+                    "venue_type": venue_type,
+                    "innings": st.get("inningsPitched", "0.0"),
+                    "hits": st.get("hits", 0),
+                    "runs": st.get("runs", 0),
+                    "er": st.get("earnedRuns", 0),
+                    "hr": st.get("homeRuns", 0),
+                    "so": st.get("strikeOuts", 0),
+                    "bb": st.get("baseOnBalls", 0),
+                    "era": st.get("era", "0.00"),
+                    "is_win": s.get("isWin", False)
+                }
+
+            # 최근 전체 5경기 (가장 최근 순)
+            recent_5_overall = [format_log(s) for s in splits[-5:][::-1]]
+
+            # 조건별 5경기 (홈 선발은 홈 경기만, 원정 선발은 원정 경기만)
+            cond_splits = [s for s in splits if s.get("isHome") == is_home]
+            split_label = "홈" if is_home else "원정"
+            recent_5_split = [format_log(s) for s in cond_splits[-5:][::-1]]
+
+            return {
+                "recent_5_overall": recent_5_overall,
+                "recent_5_split": recent_5_split,
+                "split_condition": f"최근 {split_label} 5경기"
+            }
+        except Exception as e:
+            logger.debug(f"선발투수(ID: {person_id}) 게임로그 조회 실패: {e}")
+            return {}
+
     def fetch_schedule(self, target_date: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         지정 날짜의 MLB 전체 경기 일정, 선발투수 정보 수집 (날짜 기본값: 오늘 KST 기준)
@@ -152,9 +207,14 @@ class MLBCollector:
             away_pitcher_id = away_pitcher_raw.get("id")
             home_pitcher_id = home_pitcher_raw.get("id")
 
-            # 선발 투수 스탯 수집 (원정은 Away 스플릿, 홈은 Home 스플릿 포함)
+            # 선발 투수 스탯 및 최근 5경기/조건별 5경기 수집
             away_pitcher_stats = self.fetch_pitcher_stats(away_pitcher_id, is_home=False) if away_pitcher_id else {}
+            if away_pitcher_id:
+                away_pitcher_stats.update(self.fetch_pitcher_game_logs(away_pitcher_id, is_home=False))
+
             home_pitcher_stats = self.fetch_pitcher_stats(home_pitcher_id, is_home=True) if home_pitcher_id else {}
+            if home_pitcher_id:
+                home_pitcher_stats.update(self.fetch_pitcher_game_logs(home_pitcher_id, is_home=True))
 
             venue_name = g.get("venue", {}).get("name", "구장 정보 없음")
 

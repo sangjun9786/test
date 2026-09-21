@@ -15,12 +15,19 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
 
-# Gemini 지원 모델 목록 (안정적이고 쿼터 여유가 있는 정식 모델 우선 순서)
+# Gemini 지원 모델 목록 (환경변수 GEMINI_MODEL 지정 시 1순위 반영)
+CUSTOM_MODEL = os.getenv("GEMINI_MODEL", "").strip()
 DEFAULT_GEMINI_MODELS = [
     "gemini-3.6-flash",
+    "gemini-2.5-pro",
     "gemini-3.5-flash",
     "gemini-3.1-flash-lite"
 ]
+if CUSTOM_MODEL:
+    if CUSTOM_MODEL in DEFAULT_GEMINI_MODELS:
+        DEFAULT_GEMINI_MODELS.remove(CUSTOM_MODEL)
+    DEFAULT_GEMINI_MODELS.insert(0, CUSTOM_MODEL)
+
 GEMINI_MODEL = DEFAULT_GEMINI_MODELS[0]
 
 def validate_config(require_webhook: bool = True):
