@@ -14,8 +14,13 @@ else:
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
-# Gemini 모델 설정
-GEMINI_MODEL = "gemini-3.8-flash"
+# Gemini 지원 모델 목록 (우선순위 순서대로 시도)
+DEFAULT_GEMINI_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash"
+]
+GEMINI_MODEL = DEFAULT_GEMINI_MODELS[0]
 
 def validate_config(require_webhook: bool = True):
     """

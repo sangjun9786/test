@@ -2,7 +2,7 @@ import json
 import logging
 from typing import List, Dict, Any, Optional
 from google import genai
-from ..config import GEMINI_MODEL
+from ..config import GEMINI_MODEL, DEFAULT_GEMINI_MODELS
 
 logger = logging.getLogger(__name__)
 
@@ -24,11 +24,11 @@ class GeminiSportsAnalyzer:
     """
     Google Gemini API를 활용한 스포츠 데이터 추론 및 리포트 생성기
     """
-    def __init__(self, api_key: str, model_name: str = GEMINI_MODEL):
+    def __init__(self, api_key: str, candidate_models: Optional[List[str]] = None):
         if not api_key:
             raise ValueError("GEMINI_API_KEY가 제공되지 않았습니다.")
         self.api_key = api_key
-        self.model_name = model_name
+        self.candidate_models = candidate_models or DEFAULT_GEMINI_MODELS
         self.client = genai.Client(api_key=self.api_key)
 
     def analyze_games(self, league: str, games_data: List[Dict[str, Any]]) -> str:
@@ -38,7 +38,6 @@ class GeminiSportsAnalyzer:
         if not games_data:
             return f"📊 **[{league}] 오늘 예정된 경기 데이터가 없습니다.**"
 
-        # 입력 데이터 준비
         games_json_str = json.dumps(games_data, indent=2, ensure_ascii=False)
 
         user_prompt = f"""[분석 대상 리그: {league}]
@@ -65,27 +64,37 @@ class GeminiSportsAnalyzer:
 1. ...
 2. ...
 """
+        combined_prompt = f"{SYSTEM_PROMPT}\n\n{user_prompt}"
 
-        logger.info(f"{league} {len(games_data)}개 경기 Gemini 분석 요청 중 (모델: {self.model_name})...")
-        
-        try:
-            # 1순위: interactions API
-            interaction = self.client.interactions.create(
-                model=self.model_name,
-                input=f"{SYSTEM_PROMPT}\n\n{user_prompt}"
-            )
-            report = interaction.output_text or ""
-            logger.info(f"{league} 분석 완료 (글자수: {len(report)})")
-            return report.strip()
-        except Exception as e:
-            logger.warning(f"interactions API 호출 실패 ({e}), generate_content로 대체 시도...")
+        # 사용 가능한 모델들을 순차적으로 시도 (호환성 보장)
+        last_err = None
+        for model in self.candidate_models:
+            logger.info(f"{league} 분석 시도 중 (모델: {model})...")
+            # 1. interactions.create 시도
             try:
-                # 2순위: models.generate_content API
-                resp = self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=f"{SYSTEM_PROMPT}\n\n{user_prompt}"
+                interaction = self.client.interactions.create(
+                    model=model,
+                    input=combined_prompt
                 )
-                return (resp.text or "").strip()
-            except Exception as e2:
-                logger.error(f"Gemini API 호출 완전 실패: {e2}")
-                raise RuntimeError(f"Gemini 분석 생성 실패: {e2}") from e2
+                if interaction and interaction.output_text:
+                    logger.info(f"✅ {league} 분석 완료 (모델: {model}, 글자수: {len(interaction.output_text)})")
+                    return interaction.output_text.strip()
+            except Exception as e:
+                logger.debug(f"interactions API ({model}) 실패: {e}")
+
+            # 2. models.generate_content 시도
+            try:
+                resp = self.client.models.generate_content(
+                    model=model,
+                    contents=combined_prompt
+                )
+                if resp and resp.text:
+                    logger.info(f"✅ {league} 분석 완료 (generate_content / 모델: {model}, 글자수: {len(resp.text)})")
+                    return resp.text.strip()
+            except Exception as e:
+                logger.warning(f"모델 {model} 호출 실패: {e}")
+                last_err = e
+
+        error_msg = f"Gemini 모든 모델 호출 실패: {last_err}"
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)

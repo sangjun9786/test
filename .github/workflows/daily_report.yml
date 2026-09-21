@@ -49,9 +49,15 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          # 수동 실행인 경우 입력값 반영, 자동 스케줄인 경우 all 실행
-          SPORT_PARAM="${{ github.event.inputs.sport || 'all' }}"
-          DRY_RUN_PARAM="${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}"
+          SPORT_PARAM="${{ github.event.inputs.sport }}"
+          if [ -z "$SPORT_PARAM" ]; then
+            SPORT_PARAM="all"
+          fi
           
-          echo "실행 파라미터: Sport=$SPORT_PARAM, DryRun=$DRY_RUN_PARAM"
-          python -m src.main --sport "$SPORT_PARAM" $DRY_RUN_PARAM
+          DRY_RUN_FLAG=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+          
+          echo "실행 파라미터: Sport=$SPORT_PARAM, DryRun=$DRY_RUN_FLAG"
+          python -m src.main --sport "$SPORT_PARAM" $DRY_RUN_FLAG
