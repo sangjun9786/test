@@ -15,11 +15,11 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
 
-# Gemini 지원 모델 목록 (우선순위 순서대로 시도)
+# Gemini 지원 모델 목록 (안정적이고 쿼터 여유가 있는 정식 모델 우선 순서)
 DEFAULT_GEMINI_MODELS = [
-    "gemini-3.8-flash",
-    "gemini-2.5-flash",
-    "gemini-2.0-flash"
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite"
 ]
 GEMINI_MODEL = DEFAULT_GEMINI_MODELS[0]
 

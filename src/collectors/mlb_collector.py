@@ -21,14 +21,16 @@ class MLBCollector:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) SportsAutoAnalyst/1.0"
         })
 
-    def fetch_pitcher_stats(self, person_id: int) -> Dict[str, Any]:
+    def fetch_pitcher_stats(self, person_id: int, is_home: Optional[bool] = None) -> Dict[str, Any]:
         """
-        선발 투수 시즌 지표(ERA, WHIP, W-L, K/9, BB/9 등) 조회
+        선발 투수 시즌 지표(ERA, WHIP, W-L, K/9, BB/9, 피홈런, HR/9) 및 홈/원정 스플릿 지표 조회
+        :param person_id: 선수 고유 ID
+        :param is_home: 홈 등판 여부 (True면 홈 스플릿, False면 원정 스플릿 추출)
         """
         if not person_id:
             return {}
 
-        url = f"{self.BASE_URL}/people/{person_id}/stats?stats=season&group=pitching"
+        url = f"{self.BASE_URL}/people/{person_id}/stats?stats=season,homeAndAway&group=pitching"
         try:
             resp = self.session.get(url, timeout=self.timeout)
             resp.raise_for_status()
@@ -36,22 +38,54 @@ class MLBCollector:
             stats_list = data.get("stats", [])
             if not stats_list:
                 return {}
-            splits = stats_list[0].get("splits", [])
-            if not splits:
-                return {}
 
-            stat = splits[0].get("stat", {})
-            return {
-                "era": stat.get("era", "N/A"),
-                "whip": stat.get("whip", "N/A"),
-                "wins": stat.get("wins", 0),
-                "losses": stat.get("losses", 0),
-                "inningsPitched": stat.get("inningsPitched", "0.0"),
-                "k9": stat.get("strikeoutsPer9Inn", "N/A"),
-                "bb9": stat.get("walksPer9Inn", "N/A"),
-                "avgAgainst": stat.get("avg", "N/A"),
-                "hr9": stat.get("homeRunsPer9", "N/A"),
+            season_stat = {}
+            split_stat = {}
+
+            for s in stats_list:
+                display_name = s.get("type", {}).get("displayName")
+                splits = s.get("splits", [])
+                if not splits:
+                    continue
+
+                if display_name == "season":
+                    season_stat = splits[0].get("stat", {})
+                elif display_name == "homeAndAway" and is_home is not None:
+                    for sp in splits:
+                        if sp.get("isHome") == is_home:
+                            split_stat = sp.get("stat", {})
+                            break
+
+            result: Dict[str, Any] = {
+                "era": season_stat.get("era", "N/A"),
+                "whip": season_stat.get("whip", "N/A"),
+                "wins": season_stat.get("wins", 0),
+                "losses": season_stat.get("losses", 0),
+                "inningsPitched": season_stat.get("inningsPitched", "0.0"),
+                "k9": season_stat.get("strikeoutsPer9Inn", "N/A"),
+                "bb9": season_stat.get("walksPer9Inn", "N/A"),
+                "avgAgainst": season_stat.get("avg", "N/A"),
+                "homeRuns": season_stat.get("homeRuns", 0),
+                "hr9": season_stat.get("homeRunsPer9", "N/A"),
             }
+
+            if split_stat:
+                split_name = "홈(Home)" if is_home else "원정(Away)"
+                result["split_stats"] = {
+                    "split_type": split_name,
+                    "era": split_stat.get("era", "N/A"),
+                    "whip": split_stat.get("whip", "N/A"),
+                    "wins": split_stat.get("wins", 0),
+                    "losses": split_stat.get("losses", 0),
+                    "inningsPitched": split_stat.get("inningsPitched", "0.0"),
+                    "avgAgainst": split_stat.get("avg", "N/A"),
+                    "homeRuns": split_stat.get("homeRuns", 0),
+                    "hr9": split_stat.get("homeRunsPer9", "N/A"),
+                    "k9": split_stat.get("strikeoutsPer9Inn", "N/A"),
+                    "bb9": split_stat.get("walksPer9Inn", "N/A")
+                }
+
+            return result
         except Exception as e:
             logger.warning(f"선발투수(ID: {person_id}) 스탯 조회 실패: {e}")
             return {}
@@ -118,9 +152,9 @@ class MLBCollector:
             away_pitcher_id = away_pitcher_raw.get("id")
             home_pitcher_id = home_pitcher_raw.get("id")
 
-            # 선발 투수 스탯 수집
-            away_pitcher_stats = self.fetch_pitcher_stats(away_pitcher_id) if away_pitcher_id else {}
-            home_pitcher_stats = self.fetch_pitcher_stats(home_pitcher_id) if home_pitcher_id else {}
+            # 선발 투수 스탯 수집 (원정은 Away 스플릿, 홈은 Home 스플릿 포함)
+            away_pitcher_stats = self.fetch_pitcher_stats(away_pitcher_id, is_home=False) if away_pitcher_id else {}
+            home_pitcher_stats = self.fetch_pitcher_stats(home_pitcher_id, is_home=True) if home_pitcher_id else {}
 
             venue_name = g.get("venue", {}).get("name", "구장 정보 없음")
 

@@ -40,7 +40,7 @@ async def on_ready():
     logger.info(f"🤖 디스코드 실시간 명령 봇 로그인 완료: {bot.user} (ID: {bot.user.id})")
     logger.info("명령어 대기 중: !도움말, !분석, !mlb, !kbo, !정산, !통계")
     logger.info("=" * 50)
-    await bot.change_presence(activity=discord.Game(name="!도움말 | 스포츠 실시간 분석"))
+    await bot.change_presence(activity=None)
 
 
 @bot.command(name="도움말", aliases=["help"])
@@ -56,7 +56,7 @@ async def cmd_help(ctx):
     embed.add_field(name="`!kbo`", value="당일 KBO 한국 야구 분석 및 선발 매치업 즉시 발송", inline=False)
     embed.add_field(name="`!정산`", value="어제 추천 픽의 최종 결과 및 세부 적중률 성적표 발송", inline=False)
     embed.add_field(name="`!통계`", value="SQLite(`sports_analytics.db`)에 누적된 최근 14일간 종합 성적표 확인", inline=False)
-    embed.set_footer(text="Sports Analytics Bot with Gemini 3.8 Flash")
+    embed.set_footer(text="Sports Analytics Bot with Gemini Flash")
     await ctx.send(embed=embed)
 
 
