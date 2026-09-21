@@ -13,6 +13,7 @@ else:
 # 환경변수 로드
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
 
 # Gemini 지원 모델 목록 (우선순위 순서대로 시도)
 DEFAULT_GEMINI_MODELS = [
